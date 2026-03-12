@@ -3,65 +3,73 @@ import os
 import yara
 import re
 import json
+import datetime
 
 class PacketParser:
     def __init__(self, tshark_path=r"C:\Program Files\Wireshark\tshark.exe"):
         self.tshark_path = tshark_path
-        self.yara_rules = self._load_yara_rules()
-        self.et_rules = self._load_et_rules()
+        self.yara_engine = self._load_compiled_yara()
+        self.rule_registry = self._load_protocol_registry()
 
-    def _load_yara_rules(self):
-        """Compiles YARA rules from the local rules directory."""
-        rule_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rules", "yara", "forensic_rules.yar")
-        if os.path.exists(rule_path):
-            try: return yara.compile(filepath=rule_path)
-            except Exception as e: print(f"[YARA] Compilation Error: {e}")
+    def _load_compiled_yara(self):
+        """Loads the pre-compiled master binary for YARA."""
+        yarc_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rules", "compiled", "master_forensics.yarc")
+        if os.path.exists(yarc_path):
+            try:
+                return yara.load(yarc_path)
+            except Exception as e:
+                print(f"[YARA] Load Error: {e}")
         return None
 
-    def _load_et_rules(self):
-        """Loads ET Open inspired network signatures from JSON."""
-        et_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rules", "et_open", "network_signatures.json")
-        if os.path.exists(et_path):
+    def _load_protocol_registry(self):
+        """Organizes optimized ET signatures into a Protocol-Gated Registry."""
+        registry = {}
+        json_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rules", "compiled", "network_signatures_optimized.json")
+        if os.path.exists(json_path):
             try:
-                with open(et_path, 'r') as f:
+                with open(json_path, 'r') as f:
                     rules = json.load(f)
-                    # Pre-compile regex for performance
                     for rule in rules:
+                        proto = rule.get('protocol', 'GLOBAL')
+                        if proto not in registry:
+                            registry[proto] = []
+                        # Compile pattern for execution speed
                         rule['pattern'] = re.compile(rule['regex'])
-                    return rules
-            except Exception as e: print(f"[ET Open] Load Error: {e}")
-        return []
+                        registry[proto].append(rule)
+            except Exception as e:
+                print(f"[Registry] Load Error: {e}")
+        return registry
 
-    def _analyze_payload_risk(self, payload, info, status):
+    def _analyze_payload_risk(self, payload, info, status, protocol):
         """
-        Triple-Layer Risk Engine: YARA (Malware) + ET Open (Network) + Heuristics.
+        Gated Risk Engine: Only scans relevant rule subsets based on protocol.
         """
-        # 1. YARA Signature Check (Best for files/scripts)
-        if self.yara_rules and payload:
+        if not payload and not info: return "🟢 LOW"
+
+        # 1. Global YARA Scan (Files/Malware - Always runs)
+        if self.yara_engine and payload:
             try:
-                matches = self.yara_rules.match(data=payload.encode('utf-8', errors='ignore'))
+                matches = self.yara_engine.match(data=payload.encode('utf-8', errors='ignore'))
                 if matches:
                     top = matches[0]
                     return f"🔥 {top.meta.get('risk_level', 'HIGH')} (YARA: {top.rule})"
             except: pass
 
-        # 2. ET Open Network Signature Check (Best for protocols/exploits)
-        for rule in self.et_rules:
-            # Match against payload OR info field
+        # 2. Contextual ET Open Scan (Protocol Gating)
+        # We check both the specific protocol registry and the 'GLOBAL' registry
+        target_rules = self.rule_registry.get(protocol.upper(), []) + self.rule_registry.get('GLOBAL', [])
+        
+        for rule in target_rules:
             if (payload and rule['pattern'].search(payload)) or (info and rule['pattern'].search(info)):
                 return f"🛡️ {rule['risk_level']} ({rule['name']})"
 
-        # 3. Heuristic Fallback
-        if not payload and not info: return "🟢 LOW"
-        
-        payload_lower = payload.lower()
-        if "mz" in payload[:4]: return "🔥 CRITICAL (Executable File Header)"
+        # 3. Behavioral Fallback
         if status == "Malicious": return "🟠 HIGH (Known Malicious IP)"
             
         return "🟢 LOW"
 
     def extract_iocs(self, pcap_path, ip_reputations={}):
-        """Extracts forensic data with Triple-Layer Risk Scoring."""
+        """Extracts forensic data using the optimized Gated Engine."""
         if not os.path.exists(pcap_path): return None
 
         unique_ips, dns_queries = set(), set()
@@ -77,7 +85,6 @@ class PacketParser:
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             
-            import datetime
             for line in result.stdout.splitlines():
                 if not line.strip(): continue
                 parts = line.split('\t')
@@ -113,11 +120,11 @@ class PacketParser:
                         payload_content = bytes.fromhex(raw_hex.replace(':', '')).decode('utf-8', errors='ignore')[:1000]
                     except: payload_content = raw_hex[:1000]
 
-                # --- Forensic Risk Scoring (YARA + ET + Heuristics) ---
+                # --- Forensic Risk Scoring (Gated Engine) ---
                 dest_status = ip_reputations.get(dst_ip, "Clean")
                 dns_status = ip_reputations.get(dns_name, "Clean")
                 
-                risk_label = self._analyze_payload_risk(payload_content, info, dest_status)
+                risk_label = self._analyze_payload_risk(payload_content, info, dest_status, proto)
                 if dns_status == "Malicious": risk_label = "🟠 HIGH (Malicious Domain Query)"
 
                 stream_entry = {
@@ -147,4 +154,4 @@ class PacketParser:
 
 if __name__ == "__main__":
     parser = PacketParser()
-    print("PacketParser (Triple-Layer Risk Engine) initialized.")
+    print("PacketParser (Registry-Based Gated Engine) initialized.")

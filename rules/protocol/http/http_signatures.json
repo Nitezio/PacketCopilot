@@ -1,0 +1,23 @@
+[
+    {
+        "sid": 2000001,
+        "name": "ET EXPLOIT Possible SQL Injection (UNION SELECT)",
+        "regex": "(?i)UNION.+SELECT",
+        "risk_level": "CRITICAL",
+        "category": "Exploit"
+    },
+    {
+        "sid": 2000002,
+        "name": "ET TROJAN Suspicious User-Agent (MSIE 7.0; Windows NT 10.0)",
+        "regex": "(?i)MSIE 7\\.0; Windows NT 10\\.0",
+        "risk_level": "HIGH",
+        "category": "Trojan"
+    },
+    {
+        "sid": 2000003,
+        "name": "ET POLICY PowerShell User-Agent in HTTP Request",
+        "regex": "(?i)User-Agent:.*WindowsPowerShell",
+        "risk_level": "HIGH",
+        "category": "Policy"
+    }
+]

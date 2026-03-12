@@ -1,0 +1,9 @@
+[
+    {
+        "sid": 2000101,
+        "name": "ET POLICY Suspicious Dynamic DNS Query (DuckDNS)",
+        "regex": "(?i)duckdns\\.org",
+        "risk_level": "MEDIUM",
+        "category": "Policy"
+    }
+]
