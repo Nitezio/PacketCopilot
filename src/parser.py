@@ -16,6 +16,7 @@ class PacketParser:
         unique_ips = set()
         dns_queries = set()
         payload_samples = {} # Mapping IP to a sample of its payload
+        ip_counts = {} # Tracking packet frequency for visualization
 
         try:
             # Command to extract fields + raw data (hex)
@@ -44,8 +45,12 @@ class PacketParser:
                 tcp_payload = parts[3] if len(parts) > 3 else ""
                 udp_payload = parts[4] if len(parts) > 4 else ""
                 
-                if src_ip: unique_ips.add(src_ip)
-                if dst_ip: unique_ips.add(dst_ip)
+                if src_ip: 
+                    unique_ips.add(src_ip)
+                    ip_counts[src_ip] = ip_counts.get(src_ip, 0) + 1
+                if dst_ip: 
+                    unique_ips.add(dst_ip)
+                    ip_counts[dst_ip] = ip_counts.get(dst_ip, 0) + 1
                 
                 if dns_name:
                     for q in dns_name.split(','):
@@ -77,7 +82,8 @@ class PacketParser:
         return {
             "unique_ips": sorted(list(unique_ips)),
             "dns_queries": sorted(list(dns_queries)),
-            "payloads": payload_samples
+            "payloads": payload_samples,
+            "ip_counts": ip_counts
         }
 
 if __name__ == "__main__":
