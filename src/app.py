@@ -115,7 +115,7 @@ if uploaded_file:
                 st.session_state.session_data = {
                     "triage_data": triage_data,
                     "ip_counts": iocs.get('ip_counts', {}),
-                    "payloads": iocs.get('payloads', {})
+                    "streams": iocs.get('streams', {})
                 }
                 
                 # D. Save to Cache for next time
@@ -123,7 +123,7 @@ if uploaded_file:
                     pcap_temp_path, 
                     triage_data, 
                     iocs.get('ip_counts', {}), 
-                    iocs.get('payloads', {})
+                    iocs.get('streams', {})
                 )
                 status.update(label="Analysis complete!", state="complete")
         
@@ -133,7 +133,7 @@ if uploaded_file:
     session_data = st.session_state.session_data
     triage_list = session_data["triage_data"]
     ip_counts = session_data["ip_counts"]
-    payloads = session_data["payloads"]
+    streams = session_data["streams"]
 
     if triage_list:
         # 3. Display Triage Matrix
@@ -183,19 +183,41 @@ if uploaded_file:
             if event and event.selection.rows:
                 selected_index = event.selection.rows[0]
                 selected_indicator = df_triage.iloc[selected_index]["Indicator"]
-                st.subheader(f"Streams for: {selected_indicator}")
+                st.subheader(f"Conversations for: {selected_indicator}")
                 
-                # Show the raw payload slice
-                payload_slice = payloads.get(selected_indicator, "No application layer payload detected.")
-                st.text_area("Packet Payload (1KB Slice)", value=payload_slice, height=150)
+                # Retrieve the list of streams for this indicator
+                indicator_streams = streams.get(selected_indicator, [])
                 
-                if st.button("Explain Selected Stream", type="primary"):
-                    st.session_state.explain_requested = True
-                    st.session_state.selected_indicator = selected_indicator
-                    st.session_state.current_payload = payload_slice
-                    # Note: Full VT report isn't cached in session_cache yet, 
-                    # but we can re-query if needed or just use the basic status.
-                    st.session_state.current_vt_status = df_triage.iloc[selected_index]["Status"]
+                if indicator_streams:
+                    # Convert list of dicts to DataFrame for display
+                    df_streams = pd.DataFrame(indicator_streams)
+                    # We only want to show Protocol and Info in the table
+                    st.write("Select a stream to see the full payload:")
+                    
+                    stream_selection = st.dataframe(
+                        df_streams[["Protocol", "Info"]],
+                        use_container_width=True,
+                        on_select="rerun",
+                        selection_mode="single-row",
+                        key="stream_selector"
+                    )
+
+                    if stream_selection and stream_selection.selection.rows:
+                        s_idx = stream_selection.selection.rows[0]
+                        payload_slice = df_streams.iloc[s_idx]["Payload"]
+                        
+                        if not payload_slice:
+                            payload_slice = "No application layer payload detected for this packet."
+                            
+                        st.text_area("Packet Payload (1KB Slice)", value=payload_slice, height=200)
+                        
+                        if st.button("Explain Selected Stream", type="primary"):
+                            st.session_state.explain_requested = True
+                            st.session_state.selected_indicator = selected_indicator
+                            st.session_state.current_payload = payload_slice
+                            st.session_state.current_vt_status = df_triage.iloc[selected_index]["Status"]
+                else:
+                    st.info("No detailed streams found for this indicator.")
             else:
                 st.info("Select a row from the Triage Matrix above to investigate its network streams.")
         else:

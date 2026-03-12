@@ -24,7 +24,7 @@ class LocalCache:
                 pcap_hash TEXT PRIMARY KEY,
                 triage_data TEXT,
                 ip_counts TEXT,
-                payloads TEXT
+                streams TEXT
             )
         ''')
         conn.commit()
@@ -36,7 +36,7 @@ class LocalCache:
         pcap_hash = self._generate_file_hash(pcap_path)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute('SELECT triage_data, ip_counts, payloads FROM session_cache WHERE pcap_hash = ?', (pcap_hash,))
+        cursor.execute('SELECT triage_data, ip_counts, streams FROM session_cache WHERE pcap_hash = ?', (pcap_hash,))
         row = cursor.fetchone()
         conn.close()
         
@@ -44,20 +44,20 @@ class LocalCache:
             return {
                 "triage_data": json.loads(row[0]),
                 "ip_counts": json.loads(row[1]),
-                "payloads": json.loads(row[2])
+                "streams": json.loads(row[2])
             }
         return None
 
-    def save_session(self, pcap_path, triage_data, ip_counts, payloads):
+    def save_session(self, pcap_path, triage_data, ip_counts, streams):
         """Saves a full analysis session to the cache."""
         import json
         pcap_hash = self._generate_file_hash(pcap_path)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO session_cache (pcap_hash, triage_data, ip_counts, payloads) 
+            INSERT OR REPLACE INTO session_cache (pcap_hash, triage_data, ip_counts, streams) 
             VALUES (?, ?, ?, ?)
-        ''', (pcap_hash, json.dumps(triage_data), json.dumps(ip_counts), json.dumps(payloads)))
+        ''', (pcap_hash, json.dumps(triage_data), json.dumps(ip_counts), json.dumps(streams)))
         conn.commit()
         conn.close()
 

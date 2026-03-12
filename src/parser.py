@@ -7,7 +7,7 @@ class PacketParser:
 
     def extract_iocs(self, pcap_path):
         """
-        Extracts unique IPs, DNS queries, and sample payloads from a PCAP file.
+        Extracts IPs, DNS, and detailed stream data from a PCAP file.
         """
         if not os.path.exists(pcap_path):
             print(f"Error: File {pcap_path} not found.")
@@ -15,11 +15,14 @@ class PacketParser:
 
         unique_ips = set()
         dns_queries = set()
-        payload_samples = {} # Mapping IP to a sample of its payload
-        ip_counts = {} # Tracking packet frequency for visualization
+        ip_counts = {}
+        
+        # New: Detailed stream tracking
+        # Structure: { ip: [ {proto, info, payload}, ... ] }
+        ip_streams = {} 
 
         try:
-            # Command to extract fields + raw data (hex)
+            # Command to extract fields + protocol info + raw data
             cmd = [
                 self.tshark_path,
                 "-r", pcap_path,
@@ -28,7 +31,9 @@ class PacketParser:
                 "-e", "ip.dst",
                 "-e", "dns.qry.name",
                 "-e", "tcp.payload",
-                "-e", "udp.payload"
+                "-e", "udp.payload",
+                "-e", "_ws.col.Protocol",
+                "-e", "_ws.col.Info"
             ]
             
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
@@ -38,12 +43,15 @@ class PacketParser:
                     continue
                 
                 parts = line.split('\t')
+                # parts: [src, dst, dns, tcp_hex, udp_hex, proto, info]
                 
                 src_ip = parts[0] if len(parts) > 0 else None
                 dst_ip = parts[1] if len(parts) > 1 else None
                 dns_name = parts[2] if len(parts) > 2 else None
-                tcp_payload = parts[3] if len(parts) > 3 else ""
-                udp_payload = parts[4] if len(parts) > 4 else ""
+                tcp_hex = parts[3] if len(parts) > 3 else ""
+                udp_hex = parts[4] if len(parts) > 4 else ""
+                proto = parts[5] if len(parts) > 5 else "Unknown"
+                info = parts[6] if len(parts) > 6 else ""
                 
                 if src_ip: 
                     unique_ips.add(src_ip)
@@ -56,23 +64,32 @@ class PacketParser:
                     for q in dns_name.split(','):
                         if q.strip(): dns_queries.add(q.strip())
                 
-                # Capture and truncate payload (1KB limit)
-                raw_hex = tcp_payload or udp_payload
+                # Payload processing
+                raw_hex = tcp_hex or udp_hex
+                payload_content = ""
                 if raw_hex:
-                    # Clean the hex string (remove colons if present)
                     clean_hex = raw_hex.replace(':', '')
                     try:
                         decoded = bytes.fromhex(clean_hex).decode('utf-8', errors='ignore')
                         payload_content = decoded[:1000]
                     except:
-                        payload_content = clean_hex[:1000] # Fallback to raw hex
-                    
-                    # Associate this payload with BOTH source and destination
-                    # This ensures the "Middle Pane" shows data for either side of the talk
-                    if src_ip and src_ip not in payload_samples:
-                        payload_samples[src_ip] = payload_content
-                    if dst_ip and dst_ip not in payload_samples:
-                        payload_samples[dst_ip] = payload_content
+                        payload_content = clean_hex[:1000]
+
+                # Store stream info for both source and destination
+                stream_entry = {
+                    "Protocol": proto,
+                    "Info": info,
+                    "Payload": payload_content
+                }
+
+                if payload_content or info:
+                    for ip in [src_ip, dst_ip]:
+                        if ip:
+                            if ip not in ip_streams:
+                                ip_streams[ip] = []
+                            # Avoid duplicates in the list
+                            if stream_entry not in ip_streams[ip]:
+                                ip_streams[ip].append(stream_entry)
                             
         except subprocess.CalledProcessError as e:
             print(f"TShark Error: {e.stderr}")
@@ -82,10 +99,10 @@ class PacketParser:
         return {
             "unique_ips": sorted(list(unique_ips)),
             "dns_queries": sorted(list(dns_queries)),
-            "payloads": payload_samples,
-            "ip_counts": ip_counts
+            "ip_counts": ip_counts,
+            "streams": ip_streams
         }
 
 if __name__ == "__main__":
     parser = PacketParser()
-    print("PacketParser (Subprocess Edition) initialized.")
+    print("PacketParser (Detailed Streams) initialized.")
