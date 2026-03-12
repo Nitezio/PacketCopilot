@@ -95,3 +95,4 @@ xxhash==3.6.0
 zstandard==0.25.0
 python-whois
 ipwhois
+yara-python

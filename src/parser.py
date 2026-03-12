@@ -1,36 +1,61 @@
 import subprocess
 import os
+import yara
 
 class PacketParser:
     def __init__(self, tshark_path=r"C:\Program Files\Wireshark\tshark.exe"):
         self.tshark_path = tshark_path
+        self.yara_rules = self._load_yara_rules()
+
+    def _load_yara_rules(self):
+        """
+        Compiles YARA rules from the local rules directory.
+        """
+        rule_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rules", "yara", "forensic_rules.yar")
+        if os.path.exists(rule_path):
+            try:
+                return yara.compile(filepath=rule_path)
+            except Exception as e:
+                print(f"[YARA] Compilation Error: {e}")
+        return None
 
     def _analyze_payload_risk(self, payload, info, status):
         """
-        Heuristic engine to flag harmful payloads or behaviors.
+        Hybrid Risk Engine: Combines YARA signatures with manual heuristics.
         """
+        # 1. YARA Signature Check (Highest Accuracy)
+        if self.yara_rules and payload:
+            try:
+                # Scan payload (bytes)
+                matches = self.yara_rules.match(data=payload.encode('utf-8', errors='ignore'))
+                if matches:
+                    # Get the match with the highest risk from meta
+                    top_match = matches[0]
+                    risk = top_match.meta.get("risk_level", "HIGH")
+                    desc = top_match.meta.get("description", "Malicious Signature Detected")
+                    return f"🔥 {risk} ({top_match.rule}: {desc})"
+            except Exception as e:
+                print(f"[YARA] Scan Error: {e}")
+
+        # 2. Heuristic Fallback (Keyword matching)
         payload_lower = payload.lower()
         info_lower = info.lower()
         
-        # 🚩 High Risk: File Droppers, Shells, or VT-Malicious Destinations
         if "mz" in payload[:4] or "this program cannot be run" in payload_lower:
-            return "🔥 CRITICAL (Executable File)"
+            return "🔥 CRITICAL (Executable File Header)"
         if any(term in payload_lower for term in ["powershell", "cmd.exe", "whoami", "curl", "wget", ".exe", ".sh"]):
-            return "🔴 HIGH (Command Execution)"
+            return "🔴 HIGH (Command Execution Keywords)"
         if status == "Malicious":
             return "🟠 HIGH (Known Malicious IP)"
             
-        # ⚠️ Medium Risk: Suspicious protocols or encoded data
         if any(term in info_lower for term in ["login", "admin", "password", "upload"]):
             return "🟡 MEDIUM (Sensitive Action)"
-        if len(payload) > 500 and payload.isalnum():
-            return "🟡 MEDIUM (Large Encoded Payload)"
             
         return "🟢 LOW"
 
     def extract_iocs(self, pcap_path, ip_reputations={}):
         """
-        Extracts detailed forensic data including Heuristic Risk Scoring.
+        Extracts detailed forensic data including YARA and Heuristic Risk Scoring.
         """
         if not os.path.exists(pcap_path):
             return None
@@ -100,11 +125,10 @@ class PacketParser:
                     except:
                         payload_content = clean_hex[:1000]
 
-                # --- Forensic Risk Scoring ---
+                # --- Forensic Risk Scoring (YARA + Heuristics) ---
                 dest_status = ip_reputations.get(dst_ip, "Clean")
-                dns_status = ip_reputations.get(dns_name, "Clean") # Check DNS reputation
+                dns_status = ip_reputations.get(dns_name, "Clean")
                 
-                # Combined Risk Check
                 risk_label = self._analyze_payload_risk(payload_content, info, dest_status)
                 if dns_status == "Malicious":
                     risk_label = "🟠 HIGH (Malicious Domain Query)"
@@ -145,4 +169,4 @@ class PacketParser:
 
 if __name__ == "__main__":
     parser = PacketParser()
-    print("PacketParser (Heuristic Risk Engine) initialized.")
+    print("PacketParser (YARA-Enhanced) initialized.")

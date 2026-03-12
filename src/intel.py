@@ -28,21 +28,14 @@ class IntelValidator:
         """
         headers = {"x-apikey": self.api_key}
         try:
-            # We use the current user endpoint to find quotas
-            # This endpoint itself counts as a request, so we are careful.
             response = requests.get(f"{self.base_url}/users/{self.api_key}", headers=headers)
             if response.status_code == 200:
                 data = response.json()
                 quotas = data.get('data', {}).get('attributes', {}).get('quotas', {})
                 rpm = quotas.get('api_requests_per_minute', {}).get('allowed', 4)
-                
                 if rpm > 0:
-                    # Calculate delay: 60 seconds / RPM. 
-                    # Add 0.5s buffer to prevent race conditions on the server side.
                     IntelValidator._request_delay = (60.0 / rpm) + 0.5
-                    print(f"[Intel] Auto-configured rate limit: {rpm} RPM (Delay: {IntelValidator._request_delay}s)")
         except Exception:
-            # Fallback to safe free tier defaults
             IntelValidator._request_delay = 15.5
 
     def is_private_ip(self, ip_addr):
@@ -66,13 +59,17 @@ class IntelValidator:
 
         try:
             if is_ip:
+                # IP ASN Lookup
                 obj = IPWhois(indicator)
                 res = obj.lookup_rdap(depth=1)
                 details["Provider"] = res.get('asn_description', "Unknown ASN")
             else:
                 import socket
                 socket.setdefaulttimeout(5)
-                w = whois.whois(indicator)
+                # Extract base domain
+                parts = indicator.split('.')
+                base_domain = ".".join(parts[-2:]) if len(parts) > 2 else indicator
+                w = whois.whois(base_domain)
                 details["Provider"] = w.registrar if w.registrar else "Unknown Registrar"
         except Exception:
             details["Provider"] = "Lookup Failed"
