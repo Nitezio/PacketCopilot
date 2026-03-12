@@ -1,0 +1,9 @@
+streamlit
+pandas
+requests
+pyshark
+langchain
+langchain-google-genai
+google-generativeai
+scapy
+nest_asyncio

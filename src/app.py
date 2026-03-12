@@ -9,9 +9,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from parser import PacketParser
 from intel import IntelValidator
 from ai_engine import AIEngine
+from cache import LocalCache
+import plotly.express as px
 
 # Set page config
 st.set_page_config(layout="wide", page_title="PacketCopilot")
+
+# Initialize Cache
+cache = LocalCache()
 
 # --- UI Header ---
 st.title("🛡️ PacketCopilot Dashboard")
@@ -64,18 +69,20 @@ if uploaded_file:
     if not os.path.exists(temp_dir):
         os.makedirs(temp_dir)
         
-    pcap_temp_path = os.path.join(temp_dir, uploaded_file.name)
+    # Security: Use basename to prevent path traversal
+    safe_filename = os.path.basename(uploaded_file.name)
+    pcap_temp_path = os.path.join(temp_dir, safe_filename)
     with open(pcap_temp_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
     
-    st.sidebar.success(f"File ready: {uploaded_file.name}")
+    st.sidebar.success(f"File ready: {safe_filename}")
 
     # 2. Parse PCAP
-    if "iocs" not in st.session_state or st.session_state.get("last_uploaded") != uploaded_file.name:
+    if "iocs" not in st.session_state or st.session_state.get("last_uploaded") != safe_filename:
         with st.status("Parsing Packet Capture...") as status:
             parser = PacketParser()
             st.session_state.iocs = parser.extract_iocs(pcap_temp_path)
-            st.session_state.last_uploaded = uploaded_file.name
+            st.session_state.last_uploaded = safe_filename
             status.update(label="Parsing complete!", state="complete")
 
     iocs = st.session_state.iocs
@@ -114,6 +121,23 @@ if uploaded_file:
         df_triage = pd.DataFrame(triage_data, columns=columns)
         
         if not df_triage.empty:
+            # --- Visualization Pane (Top Talkers) ---
+            st.subheader("📊 Network Traffic Overview")
+            ip_counts = iocs.get('ip_counts', {})
+            if ip_counts:
+                df_counts = pd.DataFrame(list(ip_counts.items()), columns=['IP', 'Packets'])
+                df_counts = df_counts.sort_values('Packets', ascending=False).head(10)
+                
+                fig = px.bar(
+                    df_counts, 
+                    x='IP', 
+                    y='Packets', 
+                    title="Top 10 Talker IPs",
+                    color='Packets',
+                    color_continuous_scale='Reds'
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
             # Use modern column_config for a professional look
             st.write("### Indicator Status")
             event = st.dataframe(
@@ -173,20 +197,35 @@ if uploaded_file:
 
         # Explain Stream Workflow
         if "explain_requested" in st.session_state and st.session_state.explain_requested:
-            ai_engine = AIEngine(api_key=google_key if google_key else None, model_name=selected_model)
-            with st.chat_message("assistant"):
-                st.write(f"Analyzing the traffic for **{st.session_state.selected_indicator}**...")
-                with st.spinner("AI is thinking..."):
-                    explanation = ai_engine.translate_payload(
-                        st.session_state.selected_indicator, 
-                        st.session_state.current_payload,
-                        vt_report=st.session_state.get("current_vt_report")
-                    )
-                st.session_state.messages.append({"role": "assistant", "content": f"**Analysis for {st.session_state.selected_indicator}:** {explanation}"})
-                st.markdown(explanation)
-                # Clear request to prevent re-triggering on rerun
-                del st.session_state.explain_requested
-                st.rerun()
+            # 1. Check Cache First
+            cached_explanation = cache.get_explanation(st.session_state.current_payload)
+            
+            if cached_explanation:
+                st.session_state.messages.append({
+                    "role": "assistant", 
+                    "content": f"**Analysis for {st.session_state.selected_indicator} (Cached):** {cached_explanation}"
+                })
+            else:
+                # 2. Call AI Engine
+                ai_engine = AIEngine(api_key=google_key if google_key else None, model_name=selected_model)
+                with st.chat_message("assistant"):
+                    st.write(f"Analyzing the traffic for **{st.session_state.selected_indicator}**...")
+                    with st.spinner("AI is thinking..."):
+                        explanation = ai_engine.translate_payload(
+                            st.session_state.selected_indicator, 
+                            st.session_state.current_payload,
+                            vt_report=st.session_state.get("current_vt_report")
+                        )
+                    st.session_state.messages.append({
+                        "role": "assistant", 
+                        "content": f"**Analysis for {st.session_state.selected_indicator}:** {explanation}"
+                    })
+                    # 3. Save to Cache
+                    cache.save_explanation(st.session_state.current_payload, explanation)
+            
+            # Clear request to prevent re-triggering on rerun
+            del st.session_state.explain_requested
+            st.rerun()
 
         # Persistent Chat Input
         if prompt := st.chat_input("Ask a follow-up question (e.g., 'How do I block this?')"):
