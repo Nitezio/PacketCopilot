@@ -27,6 +27,22 @@ class LocalCache:
                 streams TEXT
             )
         ''')
+        
+        # Schema Migration: Check if 'streams' column exists (for backward compatibility)
+        cursor.execute("PRAGMA table_info(session_cache)")
+        columns = [column[1] for column in cursor.fetchall()]
+        if 'payloads' in columns and 'streams' not in columns:
+            # If we find the old column, let's just drop and recreate for a clean start with the new logic
+            cursor.execute("DROP TABLE session_cache")
+            cursor.execute('''
+                CREATE TABLE session_cache (
+                    pcap_hash TEXT PRIMARY KEY,
+                    triage_data TEXT,
+                    ip_counts TEXT,
+                    streams TEXT
+                )
+            ''')
+            
         conn.commit()
         conn.close()
 
@@ -36,16 +52,20 @@ class LocalCache:
         pcap_hash = self._generate_file_hash(pcap_path)
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute('SELECT triage_data, ip_counts, streams FROM session_cache WHERE pcap_hash = ?', (pcap_hash,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return {
-                "triage_data": json.loads(row[0]),
-                "ip_counts": json.loads(row[1]),
-                "streams": json.loads(row[2])
-            }
+        try:
+            # Fixed: Added missing '?' placeholder
+            cursor.execute('SELECT triage_data, ip_counts, streams FROM session_cache WHERE pcap_hash = ?', (pcap_hash,))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "triage_data": json.loads(row[0]),
+                    "ip_counts": json.loads(row[1]),
+                    "streams": json.loads(row[2])
+                }
+        except sqlite3.OperationalError:
+            return None
+        finally:
+            conn.close()
         return None
 
     def save_session(self, pcap_path, triage_data, ip_counts, streams):
