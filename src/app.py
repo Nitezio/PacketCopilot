@@ -13,279 +13,214 @@ from cache import LocalCache
 import plotly.express as px
 
 # Set page config
-st.set_page_config(layout="wide", page_title="PacketCopilot")
+st.set_page_config(layout="wide", page_title="PacketCopilot | Unified Desk")
 
 # Initialize Cache
 cache = LocalCache()
 
 # --- UI Header ---
-st.title("🛡️ PacketCopilot Dashboard")
-st.subheader("AI-Augmented PCAP Triage & Analysis")
+st.title("🛡️ PacketCopilot: Mission Control")
+st.markdown("---")
 
-# --- Sidebar ---
+# --- Sidebar: Configuration & Global Actions ---
 with st.sidebar:
-    st.header("File Upload")
-    uploaded_file = st.file_uploader("Drag and drop a .pcap file", type=["pcap", "pcapng"])
+    st.header("📂 Data Ingestion")
+    uploaded_file = st.file_uploader("Upload PCAP/PCAPNG", type=["pcap", "pcapng"])
     
     st.divider()
-    st.header("Settings")
-    vt_key = st.text_input(
-        "VirusTotal API Key (Optional)", 
-        value="", 
-        type="password"
-    )
-    google_key = st.text_input(
-        "Google Gemini API Key (Optional)", 
-        value="", 
-        type="password"
-    )
+    st.header("⚙️ Configuration")
+    vt_key = st.text_input("VirusTotal API Key", value="", type="password")
+    google_key = st.text_input("Google Gemini API Key", value="", type="password")
     
-    # Model Selection Dropdown
-    model_options = [
-        "gemini-2.0-flash", 
-        "gemini-1.5-flash", 
-        "gemini-1.5-pro", 
-        "gemini-2.0-flash-lite-preview-02-05",
-        "Custom"
-    ]
-    selected_option = st.selectbox("Select Gemini Model", options=model_options, index=0)
-    if selected_option == "Custom":
-        selected_model = st.text_input("Enter Custom Model Name", value="gemini-3-flash-preview")
-    else:
-        selected_model = selected_option
+    selected_model = st.selectbox("Gemini Model", ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"])
 
     st.divider()
-    if st.button("🗑️ Clear Chat History"):
-        st.session_state.messages = [
-            {"role": "assistant", "content": "Chat history cleared. How can I help you analyze the traffic?"}
-        ]
+    if st.button("🗑️ Reset Investigation"):
+        st.session_state.clear()
         st.rerun()
     
-# --- Main Logic ---
-if uploaded_file:
-    # 1. Save file locally for processing
-    # Use a more reliable absolute path
-    temp_dir = os.path.abspath("temp_uploads")
-    if not os.path.exists(temp_dir):
-        os.makedirs(temp_dir)
-        
-    # Security: Use basename to prevent path traversal
-    safe_filename = os.path.basename(uploaded_file.name)
-    pcap_temp_path = os.path.join(temp_dir, safe_filename)
-    with open(pcap_temp_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    
-    st.sidebar.success(f"File ready: {safe_filename}")
-
-    # 2. Parse & Analyze (with Session Caching)
-    if "session_data" not in st.session_state or st.session_state.get("last_uploaded") != safe_filename:
-        # Check if this file has been analyzed before in the SQLite cache
-        cached_session = cache.get_session(pcap_temp_path)
-        
-        if cached_session:
-            st.session_state.session_data = cached_session
-            st.sidebar.info("✨ Loaded results from local cache.")
-        else:
-            with st.status("Performing New Analysis...") as status:
-                # A. Parse PCAP
-                parser = PacketParser()
-                iocs = parser.extract_iocs(pcap_temp_path)
-                
-                # B. Validate Threat Intel
-                validator = IntelValidator(api_key=vt_key if vt_key else None)
-                triage_data = []
-                for ip in iocs['unique_ips']:
-                    report = validator.get_ip_report(ip)
-                    triage_data.append({
-                        "Indicator": ip,
-                        "Type": "IP Address",
-                        "VT Score": f"{report['malicious_count']}/{report['total_engines']}",
-                        "Status": report['status']
-                    })
-                for dns in iocs['dns_queries']:
-                    report = validator.get_domain_report(dns)
-                    triage_data.append({
-                        "Indicator": dns,
-                        "Type": "DNS Query",
-                        "VT Score": f"{report['malicious_count']}/{report['total_engines']}",
-                        "Status": report['status']
-                    })
-                
-                # C. Prepare Session Object
-                st.session_state.session_data = {
-                    "triage_data": triage_data,
-                    "ip_counts": iocs.get('ip_counts', {}),
-                    "streams": iocs.get('streams', {})
-                }
-                
-                # D. Save to Cache for next time
-                cache.save_session(
-                    pcap_temp_path, 
-                    triage_data, 
-                    iocs.get('ip_counts', {}), 
-                    iocs.get('streams', {})
-                )
-                status.update(label="Analysis complete!", state="complete")
-        
-        st.session_state.last_uploaded = safe_filename
-
-    # Retrieve data from state
-    session_data = st.session_state.session_data
-    triage_list = session_data["triage_data"]
-    ip_counts = session_data["ip_counts"]
-    streams = session_data["streams"]
-
-    if triage_list:
-        # 3. Display Triage Matrix
-        st.header("📊 Top Pane: Triage Matrix")
-        
-        # --- Visualization Pane (Top Talkers) ---
-        st.subheader("📊 Network Traffic Overview")
-        if ip_counts:
-            df_counts = pd.DataFrame(list(ip_counts.items()), columns=['IP', 'Packets'])
-            df_counts = df_counts.sort_values('Packets', ascending=False).head(10)
-            
-            fig = px.bar(
-                df_counts, 
-                x='IP', 
-                y='Packets', 
-                title="Top 10 Talker IPs",
-                color='Packets',
-                color_continuous_scale='Reds'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-        # Explicitly define columns to prevent KeyError
-        columns = ["Indicator", "Type", "VT Score", "Status"]
-        df_triage = pd.DataFrame(triage_list, columns=columns)
-        
-        if not df_triage.empty:
-            st.write("### Indicator Status")
-            event = st.dataframe(
-                df_triage,
-                column_config={
-                    "Status": st.column_config.TextColumn(
-                        "Status",
-                        help="Threat reputation from VirusTotal",
-                    ),
-                    "VT Score": st.column_config.TextColumn("Engines Flagged"),
-                },
-                use_container_width=True,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row"
-            )
-
-            # 4. Suspicious Streams (Middle Pane)
-            st.divider()
-            st.header("🔍 Middle Pane: Suspicious Streams")
-            
-            if event and event.selection.rows:
-                selected_index = event.selection.rows[0]
-                selected_indicator = df_triage.iloc[selected_index]["Indicator"]
-                st.subheader(f"Conversations for: {selected_indicator}")
-                
-                # Retrieve the list of streams for this indicator
-                indicator_streams = streams.get(selected_indicator, [])
-                
-                if indicator_streams:
-                    # Convert list of dicts to DataFrame for display
-                    df_streams = pd.DataFrame(indicator_streams)
-                    # We only want to show Protocol and Info in the table
-                    st.write("Select a stream to see the full payload:")
-                    
-                    stream_selection = st.dataframe(
-                        df_streams[["Protocol", "Info"]],
-                        use_container_width=True,
-                        on_select="rerun",
-                        selection_mode="single-row",
-                        key="stream_selector"
-                    )
-
-                    if stream_selection and stream_selection.selection.rows:
-                        s_idx = stream_selection.selection.rows[0]
-                        payload_slice = df_streams.iloc[s_idx]["Payload"]
-                        
-                        if not payload_slice:
-                            payload_slice = "No application layer payload detected for this packet."
-                            
-                        st.text_area("Packet Payload (1KB Slice)", value=payload_slice, height=200)
-                        
-                        if st.button("Explain Selected Stream", type="primary"):
-                            st.session_state.explain_requested = True
-                            st.session_state.selected_indicator = selected_indicator
-                            st.session_state.current_payload = payload_slice
-                            st.session_state.current_vt_status = df_triage.iloc[selected_index]["Status"]
-                else:
-                    st.info("No detailed streams found for this indicator.")
-            else:
-                st.info("Select a row from the Triage Matrix above to investigate its network streams.")
-        else:
-            st.warning("No IOCs extracted from this PCAP.")
-
-        # 5. AI Copilot (Side/Bottom Pane)
-        st.divider()
-        st.header("🤖 AI Copilot")
-        
-        # Initialize chat history
-        if "messages" not in st.session_state:
-            st.session_state.messages = [
-                {"role": "assistant", "content": "I have finished the triage. Select a suspicious indicator above and click 'Explain' or ask me a question below."}
-            ]
-
-        # Display chat history
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        # Explain Stream Workflow
-        if "explain_requested" in st.session_state and st.session_state.explain_requested:
-            # 1. Check Cache First
-            cached_explanation = cache.get_explanation(st.session_state.current_payload)
-            
-            if cached_explanation:
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": f"**Analysis for {st.session_state.selected_indicator} (Cached):** {cached_explanation}"
-                })
-            else:
-                # 2. Call AI Engine
-                ai_engine = AIEngine(api_key=google_key if google_key else None, model_name=selected_model)
-                with st.chat_message("assistant"):
-                    st.write(f"Analyzing the traffic for **{st.session_state.selected_indicator}**...")
-                    with st.spinner("AI is thinking..."):
-                        explanation = ai_engine.translate_payload(
-                            st.session_state.selected_indicator, 
-                            st.session_state.current_payload,
-                            vt_report=st.session_state.get("current_vt_report")
-                        )
-                    st.session_state.messages.append({
-                        "role": "assistant", 
-                        "content": f"**Analysis for {st.session_state.selected_indicator}:** {explanation}"
-                    })
-                    # 3. Save to Cache
-                    cache.save_explanation(st.session_state.current_payload, explanation)
-            
-            # Clear request to prevent re-triggering on rerun
-            del st.session_state.explain_requested
+    if st.button("🔥 Clear Local Database"):
+        if os.path.exists("data_cache.db"):
+            os.remove("data_cache.db")
+            st.sidebar.warning("Database deleted. Please restart app.")
+            st.session_state.clear()
             st.rerun()
 
-        # Persistent Chat Input
-        if prompt := st.chat_input("Ask a follow-up question (e.g., 'How do I block this?')"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
+# --- Main Logic ---
+if uploaded_file:
+    temp_dir = os.path.abspath("temp_uploads")
+    if not os.path.exists(temp_dir): os.makedirs(temp_dir)
+    
+    safe_filename = os.path.basename(uploaded_file.name)
+    pcap_temp_path = os.path.join(temp_dir, safe_filename)
+    with open(pcap_temp_path, "wb") as f: f.write(uploaded_file.getbuffer())
+    
+    # 1. Loading/Parsing Logic
+    if "session_data" not in st.session_state or st.session_state.get("last_uploaded") != safe_filename:
+        cached_session = cache.get_session(pcap_temp_path)
+        if cached_session:
+            st.session_state.session_data = cached_session
+            st.sidebar.success("✨ Analysis loaded from cache.")
+        else:
+            with st.status("🕵️‍♂️ Analyzing Attack Patterns...") as status:
+                # A. Reputation Check First (to feed the parser heuristics)
+                parser = PacketParser()
+                # Basic run to get IPs
+                initial_results = parser.extract_iocs(pcap_temp_path)
+                validator = IntelValidator(api_key=vt_key if vt_key else None)
+                
+                reputations = {}
+                triage_data = []
+                for ip in initial_results['unique_ips']:
+                    report = validator.get_ip_report(ip)
+                    reputations[ip] = report['status']
+                    mal_count = report.get('malicious_count', 0)
+                    total_eng = report.get('total_engines', 0)
+                    triage_data.append({"Indicator": ip, "Type": "IP", "VT Score": f"{mal_count}/{total_eng}", "Status": report['status']})
 
-            ai_engine = AIEngine(api_key=google_key if google_key else None, model_name=selected_model)
-            with st.chat_message("assistant"):
-                with st.spinner("Responding..."):
-                    response = ai_engine.chat(
-                        indicator=st.session_state.get("selected_indicator", "General"),
-                        vt_report=st.session_state.get("current_vt_report"),
-                        user_query=prompt
-                    )
-                st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                for dns in initial_results['dns_queries']:
+                    report = validator.get_domain_report(dns)
+                    reputations[dns] = report['status']
+                    mal_count = report.get('malicious_count', 0)
+                    total_eng = report.get('total_engines', 0)
+                    triage_data.append({"Indicator": dns, "Type": "DNS", "VT Score": f"{mal_count}/{total_eng}", "Status": report['status']})
+
+                # B. Forensic Heuristics Run
+                results = parser.extract_iocs(pcap_temp_path, ip_reputations=reputations)
+                
+                st.session_state.session_data = {
+                    "triage_data": triage_data,
+                    "ip_counts": results.get('ip_counts', {}),
+                    "streams": results.get('streams', {}),
+                    "timeline": results.get('timeline', []),
+                    "unique_ips": results.get('unique_ips', [])
+                }
+                cache.save_session(pcap_temp_path, triage_data, results['ip_counts'], results['streams'], results['timeline'], results['unique_ips'])
+                status.update(label="Analysis complete!", state="complete")
+        st.session_state.last_uploaded = safe_filename
+
+    # --- UNIFIED DASHBOARD LAYOUT ---
+    data = st.session_state.session_data
+    
+    # Row 1: High-Level Metrics
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total IOCs", len(data['triage_data']))
+    m2.metric("Critical Threats", len([x for x in data['triage_data'] if x['Status'] == 'Malicious']))
+    # Safety fallback for Risk field
+    m3.metric("High-Risk Packets", len([x for x in data['timeline'] if "LOW" not in x.get('Risk', '🟢 LOW')]))
+    m4.metric("File Hash (Short)", cache._generate_file_hash(pcap_temp_path)[:8])
+
+    st.markdown("---")
+
+    # Row 2: Split Investigation Pane
+    col_nav, col_desk = st.columns([1, 2])
+
+    with col_nav:
+        st.subheader("🚩 1. Triage Navigator")
+        df_triage = pd.DataFrame(data['triage_data'])
+        
+        # Search Box
+        search_query = st.text_input("🔍 Filter Indicators", placeholder="IP or Domain...")
+        if search_query:
+            df_triage = df_triage[df_triage['Indicator'].str.contains(search_query, case=False)]
+
+        event = st.dataframe(
+            df_triage,
+            column_config={"Status": st.column_config.TextColumn("Verdict")},
+            use_container_width=True,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key="nav_table"
+        )
+        
+        with st.expander("📊 Traffic Distribution", expanded=False):
+            if data['ip_counts']:
+                df_counts = pd.DataFrame(list(data['ip_counts'].items()), columns=['IP', 'Pkts']).sort_values('Pkts', ascending=False).head(5)
+                fig = px.bar(df_counts, x='IP', y='Pkts', height=250, color_discrete_sequence=['#ff4b4b'])
+                st.plotly_chart(fig, use_container_width=True)
+
+    with col_desk:
+        if event and event.selection.rows:
+            selected_idx = event.selection.rows[0]
+            selected_indicator = df_triage.iloc[selected_idx]["Indicator"]
+            
+            st.subheader(f"🛠️ Investigation Desk: {selected_indicator}")
+            
+            # Sub-Pane: Contextual Attack Flow
+            st.markdown("##### 🕒 Attack Flow Timeline")
+            
+            # Global Filter for Harmful traffic
+            only_harmful = st.checkbox("🔥 Show only harmful payloads/files", value=False)
+            
+            df_tl = pd.DataFrame(data['timeline'])
+            
+            # Safety: Ensure 'Risk' column exists in DataFrame
+            if 'Risk' not in df_tl.columns:
+                df_tl['Risk'] = "🟢 LOW"
+
+            # Filter logic: Selected IP AND (optionally) Harmful only
+            mask = (df_tl['Source'] == selected_indicator) | (df_tl['Destination'] == selected_indicator)
+            if only_harmful:
+                mask = mask & (df_tl['Risk'].str.contains("HIGH|CRITICAL", case=False))
+            
+            df_filtered_tl = df_tl[mask]
+            
+            if not df_filtered_tl.empty:
+                # Color code the timeline by Risk
+                def color_risk(row):
+                    if "CRITICAL" in row.Risk: return ['background-color: #ff4b4b'] * len(row)
+                    if "HIGH" in row.Risk: return ['background-color: #ffbd45'] * len(row)
+                    return [''] * len(row)
+
+                flow_event = st.dataframe(
+                    df_filtered_tl[["Time", "Source", "Destination", "Protocol", "Risk", "Info"]],
+                    use_container_width=True,
+                    hide_index=True,
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key="flow_table"
+                )
+                
+                if flow_event and flow_event.selection.rows:
+                    f_idx = flow_event.selection.rows[0]
+                    actual_payload = df_filtered_tl.iloc[f_idx]["Payload"]
+                    risk_info = df_filtered_tl.iloc[f_idx]["Risk"]
+                    
+                    st.markdown(f"##### 🔍 Forensic Evidence | Risk: {risk_info}")
+                    c_evidence, c_ai = st.columns([1, 1])
+                    
+                    with c_evidence:
+                        st.text_area("Packet Payload", value=actual_payload if actual_payload else "No application layer data.", height=250)
+                        if st.button("🚀 Explain with PacketCopilot", type="primary"):
+                            st.session_state.explain_requested = True
+                            st.session_state.selected_payload = actual_payload
+                    
+                    with c_ai:
+                        if "messages" not in st.session_state:
+                            st.session_state.messages = [{"role": "assistant", "content": "Evidence selected. Click 'Explain' to translate."}]
+                        
+                        for m in st.session_state.messages:
+                            with st.chat_message(m["role"]): st.markdown(m["content"])
+
+                        if st.session_state.get("explain_requested"):
+                            # Check cache for this specific payload
+                            cached_res = cache.get_explanation(st.session_state.selected_payload)
+                            if cached_res:
+                                st.session_state.messages.append({"role": "assistant", "content": f"**Analysis (Cached):** {cached_res}"})
+                            else:
+                                ai = AIEngine(api_key=google_key, model_name=selected_model)
+                                with st.chat_message("assistant"):
+                                    with st.spinner("Analyzing..."):
+                                        res = ai.translate_payload(selected_indicator, st.session_state.selected_payload)
+                                    st.session_state.messages.append({"role": "assistant", "content": f"**Evidence Analysis:** {res}"})
+                                    if "Error" not in res: cache.save_explanation(st.session_state.selected_payload, res)
+                            del st.session_state.explain_requested
+                            st.rerun()
+            else:
+                st.info("No timeline events matched your filters for this indicator.")
+        else:
+            st.info("👈 Select an indicator from the Triage Navigator to begin.")
 
 else:
-    st.info("Please upload a PCAP file from the sidebar to begin analysis.")
+    st.info("Please upload a PCAP file to activate the SOC Mission Control desk.")
