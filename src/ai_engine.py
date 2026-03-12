@@ -20,8 +20,7 @@ class AIEngine:
         incorporating Threat Intel data if available.
         """
         if not self.model:
-            # Mock AI translation for testing
-            return f"Mock Analysis for {indicator}: This traffic appears to be a standard encrypted handshake. No malicious patterns detected in the first 1KB."
+            return "❌ AI Key Required: Please provide a Google Gemini API key in the sidebar to enable payload analysis."
 
         system_prompt = """
         You are a Senior Network Forensic Analyst (PacketCopilot). 

@@ -44,21 +44,28 @@ class PacketParser:
         try:
             cmd = [
                 self.tshark_path, "-r", pcap_path, "-T", "fields",
-                "-e", "frame.time_relative", "-e", "ip.src", "-e", "ip.dst",
+                "-e", "frame.time_epoch", "-e", "ip.src", "-e", "ip.dst",
                 "-e", "dns.qry.name", "-e", "tcp.payload", "-e", "udp.payload",
-                "-e", "_ws.col.Protocol", "-e", "_ws.col.Info"
+                "-e", "_ws.col.Protocol", "-e", "_ws.col.Info",
+                "-e", "tcp.srcport", "-e", "tcp.dstport", "-e", "udp.srcport", "-e", "udp.dstport"
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, check=True)
             
+            import datetime
             for line in result.stdout.splitlines():
                 if not line.strip(): continue
                 parts = line.split('\t')
                 
-                timestamp = float(parts[0]) if len(parts) > 0 and parts[0] else 0.0
+                # frame.time_epoch
+                epoch = float(parts[0]) if len(parts) > 0 and parts[0] else 0.0
+                dt = datetime.datetime.fromtimestamp(epoch)
+                date_str = dt.strftime('%Y-%m-%d')
+                time_str = dt.strftime('%H:%M')
+
                 src_raw = parts[1] if len(parts) > 1 else None
                 dst_raw = parts[2] if len(parts) > 2 else None
                 
-                # Normalize IPs (strip port numbers if present, e.g., 1.2.3.4:80 -> 1.2.3.4)
+                # Normalize IPs
                 src_ip = src_raw.split(':')[0] if src_raw else None
                 dst_ip = dst_raw.split(':')[0] if dst_raw else None
                 
@@ -67,6 +74,10 @@ class PacketParser:
                 udp_hex = parts[5] if len(parts) > 5 else ""
                 proto = parts[6] if len(parts) > 6 else "Unknown"
                 info = parts[7] if len(parts) > 7 else ""
+                
+                # Extract Ports
+                src_port = parts[8] or parts[10] or ""
+                dst_port = parts[9] or parts[11] or ""
                 
                 if src_ip: 
                     unique_ips.add(src_ip)
@@ -91,15 +102,23 @@ class PacketParser:
 
                 # --- Forensic Risk Scoring ---
                 dest_status = ip_reputations.get(dst_ip, "Clean")
+                dns_status = ip_reputations.get(dns_name, "Clean") # Check DNS reputation
+                
+                # Combined Risk Check
                 risk_label = self._analyze_payload_risk(payload_content, info, dest_status)
+                if dns_status == "Malicious":
+                    risk_label = "🟠 HIGH (Malicious Domain Query)"
 
                 stream_entry = {
-                    "Time": round(timestamp, 2),
+                    "Date": date_str,
+                    "Time": time_str,
                     "Protocol": proto,
                     "Info": info,
                     "Payload": payload_content,
                     "Source": src_ip,
+                    "SrcPort": src_port,
                     "Destination": dst_ip,
+                    "DstPort": dst_port,
                     "Risk": risk_label
                 }
 

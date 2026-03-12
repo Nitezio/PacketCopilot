@@ -71,21 +71,36 @@ if uploaded_file:
                 
                 reputations = {}
                 triage_data = []
-                for ip in initial_results['unique_ips']:
-                    report = validator.get_ip_report(ip)
-                    reputations[ip] = report['status']
-                    mal_count = report.get('malicious_count', 0)
-                    total_eng = report.get('total_engines', 0)
-                    triage_data.append({"Indicator": ip, "Type": "IP", "VT Score": f"{mal_count}/{total_eng}", "Status": report['status']})
+                
+                all_indicators = []
+                for ip in initial_results['unique_ips']: all_indicators.append((ip, True))
+                for dns in initial_results['dns_queries']: all_indicators.append((dns, False))
 
-                for dns in initial_results['dns_queries']:
-                    report = validator.get_domain_report(dns)
-                    reputations[dns] = report['status']
+                total_ioc = len(all_indicators)
+                for i, (indicator, is_ip) in enumerate(all_indicators):
+                    status.update(label=f"🔍 Scanning indicator {i+1}/{total_ioc}: {indicator} (API Rate Limiting Active...)")
+                    
+                    if is_ip:
+                        report = validator.get_ip_report(indicator)
+                    else:
+                        report = validator.get_domain_report(indicator)
+                    
+                    whois_data = validator.get_whois_data(indicator, is_ip=is_ip)
+                    reputations[indicator] = report['status']
                     mal_count = report.get('malicious_count', 0)
                     total_eng = report.get('total_engines', 0)
-                    triage_data.append({"Indicator": dns, "Type": "DNS", "VT Score": f"{mal_count}/{total_eng}", "Status": report['status']})
+                    
+                    triage_data.append({
+                        "Indicator": indicator, 
+                        "Type": "IP" if is_ip else "DNS", 
+                        "VT Score": f"{mal_count}/{total_eng}", 
+                        "Status": report['status'],
+                        "Provider": whois_data['Provider'],
+                        "WHOIS Link": whois_data['Link']
+                    })
 
                 # B. Forensic Heuristics Run
+                status.update(label="🧪 Running Forensic Heuristics...")
                 results = parser.extract_iocs(pcap_temp_path, ip_reputations=reputations)
                 
                 st.session_state.session_data = {
@@ -126,7 +141,11 @@ if uploaded_file:
 
         event = st.dataframe(
             df_triage,
-            column_config={"Status": st.column_config.TextColumn("Verdict")},
+            column_config={
+                "Status": st.column_config.TextColumn("Verdict"),
+                "Provider": st.column_config.TextColumn("Registrar/ASN"),
+                "WHOIS Link": st.column_config.LinkColumn("Full Record")
+            },
             use_container_width=True,
             hide_index=True,
             on_select="rerun",
@@ -144,8 +163,11 @@ if uploaded_file:
         if event and event.selection.rows:
             selected_idx = event.selection.rows[0]
             selected_indicator = df_triage.iloc[selected_idx]["Indicator"]
+            selected_provider = df_triage.iloc[selected_idx].get("Provider", "Unknown")
+            selected_whois_link = df_triage.iloc[selected_idx].get("WHOIS Link", "#")
             
             st.subheader(f"🛠️ Investigation Desk: {selected_indicator}")
+            st.markdown(f"**Provider/Registrar:** `{selected_provider}` | [🌐 View Full WHOIS Record]({selected_whois_link})")
             
             # Sub-Pane: Contextual Attack Flow
             st.markdown("##### 🕒 Attack Flow Timeline")
@@ -173,8 +195,13 @@ if uploaded_file:
                     if "HIGH" in row.Risk: return ['background-color: #ffbd45'] * len(row)
                     return [''] * len(row)
 
+                # Ensure Date/Time columns exist for old cache data
+                for col in ["Date", "Time", "SrcPort", "DstPort"]:
+                    if col not in df_filtered_tl.columns:
+                        df_filtered_tl[col] = ""
+
                 flow_event = st.dataframe(
-                    df_filtered_tl[["Time", "Source", "Destination", "Protocol", "Risk", "Info"]],
+                    df_filtered_tl[["Date", "Time", "Source", "SrcPort", "Destination", "DstPort", "Protocol", "Risk", "Info"]],
                     use_container_width=True,
                     hide_index=True,
                     on_select="rerun",
