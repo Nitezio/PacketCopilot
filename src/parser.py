@@ -1,70 +1,71 @@
 import subprocess
 import os
 import yara
+import re
+import json
 
 class PacketParser:
     def __init__(self, tshark_path=r"C:\Program Files\Wireshark\tshark.exe"):
         self.tshark_path = tshark_path
         self.yara_rules = self._load_yara_rules()
+        self.et_rules = self._load_et_rules()
 
     def _load_yara_rules(self):
-        """
-        Compiles YARA rules from the local rules directory.
-        """
+        """Compiles YARA rules from the local rules directory."""
         rule_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rules", "yara", "forensic_rules.yar")
         if os.path.exists(rule_path):
-            try:
-                return yara.compile(filepath=rule_path)
-            except Exception as e:
-                print(f"[YARA] Compilation Error: {e}")
+            try: return yara.compile(filepath=rule_path)
+            except Exception as e: print(f"[YARA] Compilation Error: {e}")
         return None
+
+    def _load_et_rules(self):
+        """Loads ET Open inspired network signatures from JSON."""
+        et_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "rules", "et_open", "network_signatures.json")
+        if os.path.exists(et_path):
+            try:
+                with open(et_path, 'r') as f:
+                    rules = json.load(f)
+                    # Pre-compile regex for performance
+                    for rule in rules:
+                        rule['pattern'] = re.compile(rule['regex'])
+                    return rules
+            except Exception as e: print(f"[ET Open] Load Error: {e}")
+        return []
 
     def _analyze_payload_risk(self, payload, info, status):
         """
-        Hybrid Risk Engine: Combines YARA signatures with manual heuristics.
+        Triple-Layer Risk Engine: YARA (Malware) + ET Open (Network) + Heuristics.
         """
-        # 1. YARA Signature Check (Highest Accuracy)
+        # 1. YARA Signature Check (Best for files/scripts)
         if self.yara_rules and payload:
             try:
-                # Scan payload (bytes)
                 matches = self.yara_rules.match(data=payload.encode('utf-8', errors='ignore'))
                 if matches:
-                    # Get the match with the highest risk from meta
-                    top_match = matches[0]
-                    risk = top_match.meta.get("risk_level", "HIGH")
-                    desc = top_match.meta.get("description", "Malicious Signature Detected")
-                    return f"🔥 {risk} ({top_match.rule}: {desc})"
-            except Exception as e:
-                print(f"[YARA] Scan Error: {e}")
+                    top = matches[0]
+                    return f"🔥 {top.meta.get('risk_level', 'HIGH')} (YARA: {top.rule})"
+            except: pass
 
-        # 2. Heuristic Fallback (Keyword matching)
-        payload_lower = payload.lower()
-        info_lower = info.lower()
+        # 2. ET Open Network Signature Check (Best for protocols/exploits)
+        for rule in self.et_rules:
+            # Match against payload OR info field
+            if (payload and rule['pattern'].search(payload)) or (info and rule['pattern'].search(info)):
+                return f"🛡️ {rule['risk_level']} ({rule['name']})"
+
+        # 3. Heuristic Fallback
+        if not payload and not info: return "🟢 LOW"
         
-        if "mz" in payload[:4] or "this program cannot be run" in payload_lower:
-            return "🔥 CRITICAL (Executable File Header)"
-        if any(term in payload_lower for term in ["powershell", "cmd.exe", "whoami", "curl", "wget", ".exe", ".sh"]):
-            return "🔴 HIGH (Command Execution Keywords)"
-        if status == "Malicious":
-            return "🟠 HIGH (Known Malicious IP)"
-            
-        if any(term in info_lower for term in ["login", "admin", "password", "upload"]):
-            return "🟡 MEDIUM (Sensitive Action)"
+        payload_lower = payload.lower()
+        if "mz" in payload[:4]: return "🔥 CRITICAL (Executable File Header)"
+        if status == "Malicious": return "🟠 HIGH (Known Malicious IP)"
             
         return "🟢 LOW"
 
     def extract_iocs(self, pcap_path, ip_reputations={}):
-        """
-        Extracts detailed forensic data including YARA and Heuristic Risk Scoring.
-        """
-        if not os.path.exists(pcap_path):
-            return None
+        """Extracts forensic data with Triple-Layer Risk Scoring."""
+        if not os.path.exists(pcap_path): return None
 
-        unique_ips = set()
-        dns_queries = set()
-        ip_counts = {}
-        ip_streams = {} 
-        timeline_events = []
+        unique_ips, dns_queries = set(), set()
+        ip_counts, ip_streams, timeline_events = {}, {}, []
 
         try:
             cmd = [
@@ -81,26 +82,17 @@ class PacketParser:
                 if not line.strip(): continue
                 parts = line.split('\t')
                 
-                # frame.time_epoch
                 epoch = float(parts[0]) if len(parts) > 0 and parts[0] else 0.0
                 dt = datetime.datetime.fromtimestamp(epoch)
-                date_str = dt.strftime('%Y-%m-%d')
-                time_str = dt.strftime('%H:%M')
+                date_str, time_str = dt.strftime('%Y-%m-%d'), dt.strftime('%H:%M')
 
-                src_raw = parts[1] if len(parts) > 1 else None
-                dst_raw = parts[2] if len(parts) > 2 else None
-                
-                # Normalize IPs
-                src_ip = src_raw.split(':')[0] if src_raw else None
-                dst_ip = dst_raw.split(':')[0] if dst_raw else None
-                
+                src_ip = parts[1].split(':')[0] if len(parts) > 1 and parts[1] else None
+                dst_ip = parts[2].split(':')[0] if len(parts) > 2 and parts[2] else None
                 dns_name = parts[3] if len(parts) > 3 else None
                 tcp_hex = parts[4] if len(parts) > 4 else ""
                 udp_hex = parts[5] if len(parts) > 5 else ""
                 proto = parts[6] if len(parts) > 6 else "Unknown"
                 info = parts[7] if len(parts) > 7 else ""
-                
-                # Extract Ports
                 src_port = parts[8] or parts[10] or ""
                 dst_port = parts[9] or parts[11] or ""
                 
@@ -114,39 +106,26 @@ class PacketParser:
                     for q in dns_name.split(','):
                         if q.strip(): dns_queries.add(q.strip())
                 
-                # Payload processing
                 raw_hex = tcp_hex or udp_hex
                 payload_content = ""
                 if raw_hex:
-                    clean_hex = raw_hex.replace(':', '')
                     try:
-                        decoded = bytes.fromhex(clean_hex).decode('utf-8', errors='ignore')
-                        payload_content = decoded[:1000]
-                    except:
-                        payload_content = clean_hex[:1000]
+                        payload_content = bytes.fromhex(raw_hex.replace(':', '')).decode('utf-8', errors='ignore')[:1000]
+                    except: payload_content = raw_hex[:1000]
 
-                # --- Forensic Risk Scoring (YARA + Heuristics) ---
+                # --- Forensic Risk Scoring (YARA + ET + Heuristics) ---
                 dest_status = ip_reputations.get(dst_ip, "Clean")
                 dns_status = ip_reputations.get(dns_name, "Clean")
                 
                 risk_label = self._analyze_payload_risk(payload_content, info, dest_status)
-                if dns_status == "Malicious":
-                    risk_label = "🟠 HIGH (Malicious Domain Query)"
+                if dns_status == "Malicious": risk_label = "🟠 HIGH (Malicious Domain Query)"
 
                 stream_entry = {
-                    "Date": date_str,
-                    "Time": time_str,
-                    "Protocol": proto,
-                    "Info": info,
-                    "Payload": payload_content,
-                    "Source": src_ip,
-                    "SrcPort": src_port,
-                    "Destination": dst_ip,
-                    "DstPort": dst_port,
-                    "Risk": risk_label
+                    "Date": date_str, "Time": time_str, "Protocol": proto, "Info": info,
+                    "Payload": payload_content, "Source": src_ip, "SrcPort": src_port,
+                    "Destination": dst_ip, "DstPort": dst_port, "Risk": risk_label
                 }
 
-                # Filter timeline to significant events
                 if "LOW" not in risk_label or payload_content:
                     timeline_events.append(stream_entry)
 
@@ -156,8 +135,7 @@ class PacketParser:
                             if ip not in ip_streams: ip_streams[ip] = []
                             if stream_entry not in ip_streams[ip]: ip_streams[ip].append(stream_entry)
                             
-        except Exception as e:
-            print(f"Error during parsing: {e}")
+        except Exception as e: print(f"Error during parsing: {e}")
 
         return {
             "unique_ips": sorted(list(unique_ips)),
@@ -169,4 +147,4 @@ class PacketParser:
 
 if __name__ == "__main__":
     parser = PacketParser()
-    print("PacketParser (YARA-Enhanced) initialized.")
+    print("PacketParser (Triple-Layer Risk Engine) initialized.")
