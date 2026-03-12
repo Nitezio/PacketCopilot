@@ -77,68 +77,89 @@ if uploaded_file:
     
     st.sidebar.success(f"File ready: {safe_filename}")
 
-    # 2. Parse PCAP
-    if "iocs" not in st.session_state or st.session_state.get("last_uploaded") != safe_filename:
-        with st.status("Parsing Packet Capture...") as status:
-            parser = PacketParser()
-            st.session_state.iocs = parser.extract_iocs(pcap_temp_path)
-            st.session_state.last_uploaded = safe_filename
-            status.update(label="Parsing complete!", state="complete")
+    # 2. Parse & Analyze (with Session Caching)
+    if "session_data" not in st.session_state or st.session_state.get("last_uploaded") != safe_filename:
+        # Check if this file has been analyzed before in the SQLite cache
+        cached_session = cache.get_session(pcap_temp_path)
+        
+        if cached_session:
+            st.session_state.session_data = cached_session
+            st.sidebar.info("✨ Loaded results from local cache.")
+        else:
+            with st.status("Performing New Analysis...") as status:
+                # A. Parse PCAP
+                parser = PacketParser()
+                iocs = parser.extract_iocs(pcap_temp_path)
+                
+                # B. Validate Threat Intel
+                validator = IntelValidator(api_key=vt_key if vt_key else None)
+                triage_data = []
+                for ip in iocs['unique_ips']:
+                    report = validator.get_ip_report(ip)
+                    triage_data.append({
+                        "Indicator": ip,
+                        "Type": "IP Address",
+                        "VT Score": f"{report['malicious_count']}/{report['total_engines']}",
+                        "Status": report['status']
+                    })
+                for dns in iocs['dns_queries']:
+                    report = validator.get_domain_report(dns)
+                    triage_data.append({
+                        "Indicator": dns,
+                        "Type": "DNS Query",
+                        "VT Score": f"{report['malicious_count']}/{report['total_engines']}",
+                        "Status": report['status']
+                    })
+                
+                # C. Prepare Session Object
+                st.session_state.session_data = {
+                    "triage_data": triage_data,
+                    "ip_counts": iocs.get('ip_counts', {}),
+                    "payloads": iocs.get('payloads', {})
+                }
+                
+                # D. Save to Cache for next time
+                cache.save_session(
+                    pcap_temp_path, 
+                    triage_data, 
+                    iocs.get('ip_counts', {}), 
+                    iocs.get('payloads', {})
+                )
+                status.update(label="Analysis complete!", state="complete")
+        
+        st.session_state.last_uploaded = safe_filename
 
-    iocs = st.session_state.iocs
+    # Retrieve data from state
+    session_data = st.session_state.session_data
+    triage_list = session_data["triage_data"]
+    ip_counts = session_data["ip_counts"]
+    payloads = session_data["payloads"]
 
-    if iocs:
-        # 3. Validate Threat Intel (Triage Matrix)
+    if triage_list:
+        # 3. Display Triage Matrix
         st.header("📊 Top Pane: Triage Matrix")
         
-        validator = IntelValidator(api_key=vt_key if vt_key else None)
-        
-        triage_data = []
-        full_vt_reports = {} # Cache full reports for the AI
-
-        for ip in iocs['unique_ips']:
-            report = validator.get_ip_report(ip)
-            triage_data.append({
-                "Indicator": ip,
-                "Type": "IP Address",
-                "VT Score": f"{report['malicious_count']}/{report['total_engines']}",
-                "Status": report['status']
-            })
-            full_vt_reports[ip] = report.get('full_report')
+        # --- Visualization Pane (Top Talkers) ---
+        st.subheader("📊 Network Traffic Overview")
+        if ip_counts:
+            df_counts = pd.DataFrame(list(ip_counts.items()), columns=['IP', 'Packets'])
+            df_counts = df_counts.sort_values('Packets', ascending=False).head(10)
             
-        for dns in iocs['dns_queries']:
-            report = validator.get_domain_report(dns)
-            triage_data.append({
-                "Indicator": dns,
-                "Type": "DNS Query",
-                "VT Score": f"{report['malicious_count']}/{report['total_engines']}",
-                "Status": report['status']
-            })
-            full_vt_reports[dns] = report.get('full_report')
+            fig = px.bar(
+                df_counts, 
+                x='IP', 
+                y='Packets', 
+                title="Top 10 Talker IPs",
+                color='Packets',
+                color_continuous_scale='Reds'
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Explicitly define columns to prevent KeyError if data is empty
+        # Explicitly define columns to prevent KeyError
         columns = ["Indicator", "Type", "VT Score", "Status"]
-        df_triage = pd.DataFrame(triage_data, columns=columns)
+        df_triage = pd.DataFrame(triage_list, columns=columns)
         
         if not df_triage.empty:
-            # --- Visualization Pane (Top Talkers) ---
-            st.subheader("📊 Network Traffic Overview")
-            ip_counts = iocs.get('ip_counts', {})
-            if ip_counts:
-                df_counts = pd.DataFrame(list(ip_counts.items()), columns=['IP', 'Packets'])
-                df_counts = df_counts.sort_values('Packets', ascending=False).head(10)
-                
-                fig = px.bar(
-                    df_counts, 
-                    x='IP', 
-                    y='Packets', 
-                    title="Top 10 Talker IPs",
-                    color='Packets',
-                    color_continuous_scale='Reds'
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-            # Use modern column_config for a professional look
             st.write("### Indicator Status")
             event = st.dataframe(
                 df_triage,
@@ -159,26 +180,26 @@ if uploaded_file:
             st.divider()
             st.header("🔍 Middle Pane: Suspicious Streams")
             
-            # Check if a row is selected
             if event and event.selection.rows:
                 selected_index = event.selection.rows[0]
                 selected_indicator = df_triage.iloc[selected_index]["Indicator"]
                 st.subheader(f"Streams for: {selected_indicator}")
                 
-                # Show the raw payload slice in the middle pane
-                payload_slice = iocs['payloads'].get(selected_indicator, "No application layer payload detected.")
+                # Show the raw payload slice
+                payload_slice = payloads.get(selected_indicator, "No application layer payload detected.")
                 st.text_area("Packet Payload (1KB Slice)", value=payload_slice, height=150)
                 
-                # Button for the AI Copilot
                 if st.button("Explain Selected Stream", type="primary"):
                     st.session_state.explain_requested = True
                     st.session_state.selected_indicator = selected_indicator
                     st.session_state.current_payload = payload_slice
-                    st.session_state.current_vt_report = full_vt_reports.get(selected_indicator)
+                    # Note: Full VT report isn't cached in session_cache yet, 
+                    # but we can re-query if needed or just use the basic status.
+                    st.session_state.current_vt_status = df_triage.iloc[selected_index]["Status"]
             else:
                 st.info("Select a row from the Triage Matrix above to investigate its network streams.")
         else:
-            st.warning("No IOCs (IPs or DNS queries) extracted from this PCAP.")
+            st.warning("No IOCs extracted from this PCAP.")
 
         # 5. AI Copilot (Side/Bottom Pane)
         st.divider()
