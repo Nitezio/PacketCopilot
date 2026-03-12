@@ -13,7 +13,12 @@ class IntelValidator:
     def __init__(self, api_key=None):
         self.api_key = api_key or os.getenv("VT_API_KEY")
         self.base_url = "https://www.virustotal.com/api/v3"
-        # If we have a key, try to auto-configure once
+        
+        # Verify TShark path once
+        tshark_path = r"C:\Program Files\Wireshark\tshark.exe"
+        if not os.path.exists(tshark_path):
+            print(f"[Warning] TShark not found at {tshark_path}. Parsing will fail.")
+
         if self.api_key:
             self.auto_configure_rate_limit()
 

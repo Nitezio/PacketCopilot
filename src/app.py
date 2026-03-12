@@ -118,12 +118,16 @@ if uploaded_file:
     data = st.session_state.session_data
     
     # Row 1: High-Level Metrics
-    m1, m2, m3, m4 = st.columns(4)
+    m1, m2, m3 = st.columns(3)
     m1.metric("Total IOCs", len(data['triage_data']))
     m2.metric("Critical Threats", len([x for x in data['triage_data'] if x['Status'] == 'Malicious']))
     # Safety fallback for Risk field
     m3.metric("High-Risk Packets", len([x for x in data['timeline'] if "LOW" not in x.get('Risk', '🟢 LOW')]))
-    m4.metric("File Hash (Short)", cache._generate_file_hash(pcap_temp_path)[:8])
+    
+    # Display full copyable SHA-256 hash
+    full_hash = cache._generate_file_hash(pcap_temp_path)
+    st.caption(f"📄 **File:** `{safe_filename}`")
+    st.code(full_hash, language="text")
 
     st.markdown("---")
 
