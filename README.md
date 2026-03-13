@@ -71,3 +71,4 @@ pip install -r requirements.txt
     *   Identify high-risk indicators in the **Triage Navigator**.
     *   Trace the attack flow in the **Timeline**, using the "Harmful" filter to isolate malicious payloads.
     *   Review specific evidence and click **"🚀 Explain with PacketCopilot"** for a deep forensic summary.
+
