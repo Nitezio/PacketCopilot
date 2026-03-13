@@ -27,6 +27,16 @@ PacketCopilot solves these challenges by:
 
 ---
 
+## 🛡️ Detection Engine (Triple-Layer Risk Scoring)
+
+PacketCopilot employs a multi-layered, deterministic risk engine to ensure professional-grade accuracy in threat identification. Every packet is processed through a high-performance **Contextual Gating** architecture that only executes relevant rule subsets based on the detected protocol.
+
+*   **Layer 1: YARA Malware Engine**: Scans application-layer data against a pre-compiled master binary containing hundreds of community-verified YARA rules. This layer is designed to identify specific malware family signatures, such as **AsyncRat**, **Emotet**, and common **Cobalt Strike** beacons.
+*   **Layer 2: ET Open Signature Engine**: Leverages over **5,000 optimized regex signatures** derived from the **Emerging Threats Open** ruleset. This engine detects technical attack patterns including **SQL Injection**, **Log4j exploits**, and suspicious **Command & Control (C2)** communication behaviors.
+*   **Layer 3: Forensic Heuristics**: A protocol-aware fallback layer that identifies "Forensic Red Flags" such as unauthorized PowerShell drops, obfuscated VBScripts, and binary file transfers disguised as legitimate traffic (e.g., EXE data inside JPG containers).
+
+---
+
 ## 🛠️ System Architecture
 
 1.  **Extraction Layer**: Uses a stabilized `tshark` subprocess engine to mathematically isolate high-entropy Layer 7 data.
