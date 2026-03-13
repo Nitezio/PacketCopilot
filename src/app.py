@@ -123,6 +123,7 @@ if uploaded_file:
     m2.metric("Critical Threats", len([x for x in data['triage_data'] if x['Status'] == 'Malicious']))
     # Safety fallback for Risk field
     m3.metric("High-Risk Packets", len([x for x in data['timeline'] if "LOW" not in x.get('Risk', '🟢 LOW')]))
+
     
     # Display full copyable SHA-256 hash
     full_hash = cache._generate_file_hash(pcap_temp_path)
