@@ -243,7 +243,12 @@ if uploaded_file:
                                 ai = AIEngine(api_key=google_key, model_name=selected_model)
                                 with st.chat_message("assistant"):
                                     with st.spinner("Analyzing..."):
-                                        res = ai.translate_payload(selected_indicator, st.session_state.selected_payload)
+                                        # Pass the risk_info (signature match) to the AI
+                                        res = ai.translate_payload(
+                                            selected_indicator, 
+                                            st.session_state.selected_payload,
+                                            signature_match=risk_info
+                                        )
                                     st.session_state.messages.append({"role": "assistant", "content": f"**Evidence Analysis:** {res}"})
                                     if "Error" not in res: cache.save_explanation(st.session_state.selected_payload, res)
                             del st.session_state.explain_requested

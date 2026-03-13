@@ -14,10 +14,10 @@ class AIEngine:
                 temperature=0.2
             )
 
-    def translate_payload(self, indicator, payload, vt_report=None):
+    def translate_payload(self, indicator, payload, vt_report=None, signature_match=None):
         """
         Translates technical packet payload into plain English, 
-        incorporating Threat Intel data if available.
+        incorporating Threat Intel and Signature Match data.
         """
         if not self.model:
             return "❌ AI Key Required: Please provide a Google Gemini API key in the sidebar to enable payload analysis."
@@ -28,20 +28,22 @@ class AIEngine:
         
         Guidelines:
         - Be concise (max 3-4 sentences).
-        - Identify the protocol if possible.
+        - Identify the protocol and malicious intent.
+        - IMPORTANT: A deterministic signature engine has already flagged this (see 'Signature Match'). Use this as your primary evidence.
         - Cross-reference with VirusTotal data.
-        - SPECIAL FOCUS: Look for script-based persistence (e.g., VBS, PowerShell). 
-        - Identify any LOCAL FILE NAMES or PATHS being created or dropped by the script (e.g., filenames like 'Conted.vbs').
         - Decode malicious intent like C2 beaconing or credential theft.
         """
         
         human_template = """
         Analyze this indicator: {indicator}
         
-        Packet Payload Segment:
+        [DETERMINISTIC SIGNATURE MATCH]
+        {sig_context}
+
+        [PACKET PAYLOAD SEGMENT]
         {payload}
         
-        Threat Intelligence Context (VirusTotal):
+        [THREAT INTELLIGENCE CONTEXT]
         {vt_context}
         """
         
@@ -52,13 +54,15 @@ class AIEngine:
         
         chain = prompt | self.model | StrOutputParser()
         
-        vt_context = str(vt_report) if vt_report else "No threat intelligence available for this indicator."
+        vt_context = str(vt_report) if vt_report else "No threat intelligence available."
+        sig_context = signature_match if signature_match else "No specific signature match (Heuristic only)."
         
         try:
             return chain.invoke({
                 "indicator": indicator, 
                 "payload": payload,
-                "vt_context": vt_context
+                "vt_context": vt_context,
+                "sig_context": sig_context
             })
         except Exception as e:
             err_msg = str(e)

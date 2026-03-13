@@ -5,12 +5,7 @@ __pycache__/
 venv/
 .env
 
-# Project Specific
-temp_uploads/
-*.pcap
-*.pcapng
-*.docx
-*.txt
-*.skill
-GEMINI.md
-tests/
+# Community Rules (Raw)
+rules/global/
+rules/protocol/
+!rules/compiled/

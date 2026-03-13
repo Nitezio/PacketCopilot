@@ -11,9 +11,6 @@ class ForensicCompiler:
             os.makedirs(self.compiled_dir)
 
     def compile_all(self):
-        """
-        Orchestrates the compilation of YARA and Network signatures.
-        """
         print("[Compiler] Starting professional rules compilation...")
         yara_path = self.compile_yara()
         et_path = self.compile_et_open()
@@ -21,26 +18,20 @@ class ForensicCompiler:
 
     def compile_yara(self):
         """
-        Compiles all .yar files into a single binary blob.
+        Compiles the pre-flattened master YARA ruleset.
         """
-        rule_map = {}
-        # Collect all YARA files from global and protocol folders
-        for root, dirs, files in os.walk(self.rules_dir):
-            for file in files:
-                if file.endswith(".yar"):
-                    namespace = os.path.basename(root)
-                    full_path = os.path.join(root, file)
-                    rule_map[f"{namespace}_{file}"] = full_path
-
-        if not rule_map:
-            print("[Compiler] No YARA rules found.")
+        flat_rule_path = os.path.join(self.rules_dir, "global", "flattened_malware.yar")
+        
+        if not os.path.exists(flat_rule_path):
+            print(f"[Compiler] Error: Flattened rules not found at {flat_rule_path}")
             return None
 
         try:
-            compiled_rules = yara.compile(filepaths=rule_map)
+            # Load the single flattened file
+            compiled_rules = yara.compile(filepath=flat_rule_path)
             output_path = os.path.join(self.compiled_dir, "master_forensics.yarc")
             compiled_rules.save(output_path)
-            print(f"[Compiler] YARA: Successfully baked {len(rule_map)} rule files into binary.")
+            print(f"[Compiler] YARA: Successfully baked the FULL community ruleset into binary.")
             return output_path
         except Exception as e:
             print(f"[Compiler] YARA Error: {e}")
@@ -48,7 +39,7 @@ class ForensicCompiler:
 
     def compile_et_open(self):
         """
-        Validates and optimizes the JSON regex signatures.
+        Validates and optimizes the JSON regex signatures, filtering out incompatible PCRE.
         """
         all_et_rules = []
         for root, dirs, files in os.walk(os.path.join(self.rules_dir, "protocol")):
@@ -57,19 +48,28 @@ class ForensicCompiler:
                     try:
                         with open(os.path.join(root, file), 'r') as f:
                             rules = json.load(f)
-                            # Verify regex syntax before finishing
                             for r in rules:
-                                re.compile(r['regex'])
-                                r['protocol'] = os.path.basename(root).upper()
-                            all_et_rules.extend(rules)
+                                try:
+                                    # Filter out Suricata-specific extensions like (?< or (?P
+                                    # Python's 're' module is strict. 
+                                    clean_regex = r['regex']
+                                    if "(?<" in clean_regex or "(?P<" in clean_regex:
+                                        continue # Skip advanced PCRE not compatible with Python
+                                    
+                                    re.compile(clean_regex)
+                                    r['protocol'] = os.path.basename(root).upper()
+                                    all_et_rules.extend(rules)
+                                except: continue 
                     except Exception as e:
                         print(f"[Compiler] ET Error in {file}: {e}")
 
+        # Limit to top 5000 rules to prevent memory bloat in Streamlit
+        optimized_subset = all_et_rules[:5000]
         output_path = os.path.join(self.compiled_dir, "network_signatures_optimized.json")
         with open(output_path, 'w') as f:
-            json.dump(all_et_rules, f, indent=4)
+            json.dump(optimized_subset, f, indent=4)
         
-        print(f"[Compiler] ET Open: Optimized {len(all_et_rules)} network signatures.")
+        print(f"[Compiler] ET Open: Optimized {len(optimized_subset)} network signatures (filtered for Python compatibility).")
         return output_path
 
 if __name__ == "__main__":
